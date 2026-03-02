@@ -1,0 +1,13 @@
+{
+  "start_date": "2016-01-01",
+  "end_date": "2026-02-28",
+  "db_config": {
+    "host": "localhost",
+    "port": "5433",
+    "database": "Stock_Data",
+    "user": "postgres",
+    "password": "12345"
+  },
+  "save_password": true,
+  "auto_aggregate": true
+}
