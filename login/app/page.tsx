@@ -458,6 +458,131 @@ function ReturnCell({ value }: { value: number | null }) {
   )
 }
 
+// ── Data Fetch Modal ─────────────────────────────────────────────────────
+function DataFetchModal({ onClose }: { onClose: () => void }) {
+  const today = new Date().toISOString().split('T')[0]
+  const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+
+  const [startDate, setStartDate] = useState(oneYearAgo)
+  const [endDate, setEndDate] = useState(today)
+  const [status, setStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [log, setLog] = useState<string[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  // Poll status every 5s while running
+  useEffect(() => {
+    if (status !== 'running') return
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch('/api/fetch-data')
+        const d = await res.json()
+        setStatus(d.status)
+        setLog(d.recentLog ?? [])
+        if (!d.running) clearInterval(iv)
+      } catch { /* ignore */ }
+    }, 5000)
+    return () => clearInterval(iv)
+  }, [status])
+
+  const handleStart = async () => {
+    setError(null)
+    setLog([])
+    setStatus('running')
+    try {
+      const res = await fetch('/api/fetch-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDate, endDate }),
+      })
+      const d = await res.json()
+      if (!res.ok) { setError(d.error ?? 'Failed to start'); setStatus('error') }
+      else setLog([`Job started (PID ${d.pid}) · ${startDate} → ${endDate}`])
+    } catch (e) {
+      setError(String(e))
+      setStatus('error')
+    }
+  }
+
+  const statusColor = status === 'done' ? 'oklch(0.72 0.22 145)' : status === 'error' ? 'oklch(0.62 0.23 25)' : 'oklch(0.72 0.20 60)'
+  const statusIcon = status === 'done' ? '✅' : status === 'error' ? '❌' : status === 'running' ? '⏳' : '📥'
+  const statusLabel = status === 'done' ? 'Done! Data fetched successfully.' : status === 'error' ? 'Error — check log below.' : status === 'running' ? 'Running in background… do not close the page.' : 'Ready to fetch'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'oklch(0.04 0.01 240 / 0.85)', backdropFilter: 'blur(8px)' }}>
+      <div className="w-full max-w-lg rounded-2xl p-6 space-y-5"
+        style={{ background: 'oklch(0.10 0.015 240)', border: '1px solid oklch(0.22 0.015 240)' }}>
+
+        {/* Title */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-black text-white">📥 Fetch Market Data</h2>
+            <p className="text-xs text-white/40 mt-0.5">Downloads NSE bhavcopy data into your PostgreSQL database</p>
+          </div>
+          <button onClick={onClose} disabled={status === 'running'}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/8 transition disabled:opacity-30"
+            style={{ border: '1px solid oklch(0.22 0.015 240)' }}>✕</button>
+        </div>
+
+        {/* Date pickers */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-widest" style={{ color: 'oklch(0.55 0.015 240)' }}>Start Date</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+              max={endDate} disabled={status === 'running'}
+              className="w-full rounded-xl px-3 py-2.5 text-sm font-medium text-white outline-none"
+              style={{ background: 'oklch(0.13 0.015 235)', border: '1px solid oklch(0.22 0.015 240)' }} />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-widest" style={{ color: 'oklch(0.55 0.015 240)' }}>End Date</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+              min={startDate} disabled={status === 'running'}
+              className="w-full rounded-xl px-3 py-2.5 text-sm font-medium text-white outline-none"
+              style={{ background: 'oklch(0.13 0.015 235)', border: '1px solid oklch(0.22 0.015 240)' }} />
+          </div>
+        </div>
+
+        {/* Status banner */}
+        {status !== 'idle' && (
+          <div className="rounded-xl px-4 py-3 flex items-start gap-3"
+            style={{ background: `${statusColor.replace(')', ' / 0.10)')}`, border: `1px solid ${statusColor.replace(')', ' / 0.30)')}` }}>
+            <span className="text-base">{statusIcon}</span>
+            <p className="text-xs font-semibold" style={{ color: statusColor }}>{statusLabel}</p>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && <p className="text-xs font-semibold" style={{ color: 'oklch(0.72 0.22 25)' }}>⚠ {error}</p>}
+
+        {/* Log output */}
+        {log.length > 0 && (
+          <div className="rounded-xl p-3 font-mono text-[10px] text-white/50 space-y-0.5 max-h-40 overflow-y-auto"
+            style={{ background: 'oklch(0.07 0.01 240)', border: '1px solid oklch(0.15 0.015 240)' }}>
+            {log.map((l, i) => <p key={i}>{l}</p>)}
+          </div>
+        )}
+
+        {/* Warning */}
+        <p className="text-[10px] text-white/25 text-center">
+          ⚠ This may take hours for large date ranges. The script runs in the background — you can use the dashboard normally. Refresh the page when done.
+        </p>
+
+        {/* Action buttons */}
+        <div className="flex gap-2">
+          <button onClick={onClose} disabled={status === 'running'}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white/50 hover:text-white transition disabled:opacity-30"
+            style={{ background: 'oklch(0.14 0.015 235)', border: '1px solid oklch(0.22 0.015 240)' }}>Cancel</button>
+          <button onClick={handleStart} disabled={status === 'running'}
+            className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white transition disabled:opacity-60"
+            style={{ background: status === 'done' ? 'oklch(0.72 0.22 145 / 0.25)' : 'linear-gradient(135deg, oklch(0.55 0.18 220), oklch(0.45 0.22 260))' }}>
+            {status === 'running' ? '⏳ Running...' : status === 'done' ? '✅ Completed' : '▶ Start Fetch'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Post-login dashboard ───────────────────────────────────────────────────
 function ReturnDashboard({ name, onLogout }: { name: string; onLogout: () => void }) {
   const [period, setPeriod] = useState<Period>('1d')
@@ -465,6 +590,7 @@ function ReturnDashboard({ name, onLogout }: { name: string; onLogout: () => voi
   const [summary, setSummary] = useState<SummaryResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [showFetch, setShowFetch] = useState(false)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -511,6 +637,7 @@ function ReturnDashboard({ name, onLogout }: { name: string; onLogout: () => voi
     <div className="min-h-screen flex flex-col" style={{ background: 'oklch(0.07 0.015 240)' }}>
       <AnimatedBackground />
       <TopTicker />
+      {showFetch && <DataFetchModal onClose={() => setShowFetch(false)} />}
 
       {/* ── Header ── */}
       <header className="relative z-10 flex items-center justify-between px-5 py-3 shrink-0"
@@ -542,6 +669,16 @@ function ReturnDashboard({ name, onLogout }: { name: string; onLogout: () => voi
             {initials}
           </div>
           <span className="hidden sm:block text-sm text-white/60 max-w-[120px] truncate">{name}</span>
+
+          {/* Fetch Data */}
+          <button onClick={() => setShowFetch(true)}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold transition-all"
+            style={{ background: 'oklch(0.55 0.18 220 / 0.15)', border: '1px solid oklch(0.55 0.18 220 / 0.35)', color: 'oklch(0.75 0.15 220)' }}>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Fetch Data
+          </button>
 
           {/* Sign Out */}
           <button onClick={onLogout}
