@@ -583,6 +583,129 @@ function DataFetchModal({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ── Enrich Securities Modal ──────────────────────────────────────────────────
+function EnrichSecuritiesModal({ onClose }: { onClose: () => void }) {
+  type EnrichStatus = 'idle' | 'running' | 'done' | 'error'
+  const [status, setStatus] = useState<EnrichStatus>('idle')
+  const [total, setTotal] = useState(0)
+  const [processed, setProcessed] = useState(0)
+  const [updated, setUpdated] = useState(0)
+  const [errors, setErrors] = useState(0)
+  const [log, setLog] = useState<string[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  // Poll every 2 s while running
+  useEffect(() => {
+    if (status !== 'running') return
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch('/api/enrich-securities')
+        const d = await res.json()
+        setStatus(d.status as EnrichStatus)
+        setTotal(d.total ?? 0)
+        setProcessed(d.processed ?? 0)
+        setUpdated(d.updated ?? 0)
+        setErrors(d.errors ?? 0)
+        setLog(d.recentLog ?? [])
+        if (d.status !== 'running') clearInterval(iv)
+      } catch { /* ignore */ }
+    }, 2000)
+    return () => clearInterval(iv)
+  }, [status])
+
+  const handleStart = async () => {
+    setError(null)
+    setLog([])
+    setTotal(0)
+    setProcessed(0)
+    setUpdated(0)
+    setErrors(0)
+    try {
+      const res = await fetch('/api/enrich-securities', { method: 'POST' })
+      const d = await res.json()
+      if (!res.ok) { setError(d.error ?? 'Failed to start'); return }
+      setStatus('running')
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  const pct = total > 0 ? Math.round((processed / total) * 100) : 0
+  const statusColor =
+    status === 'done' ? 'oklch(0.72 0.22 145)'
+      : status === 'error' ? 'oklch(0.62 0.23 25)'
+        : 'oklch(0.72 0.20 60)'
+  const statusLabel =
+    status === 'done' ? `Done! ${updated} of ${total} securities enriched.`
+      : status === 'error' ? 'Error — see log below.'
+        : status === 'running' ? `Running… ${processed}/${total} (${pct}%) · ${updated} updated · ${errors} errors`
+          : 'Ready to enrich company names & sectors'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'oklch(0.04 0.01 240 / 0.85)', backdropFilter: 'blur(8px)' }}>
+      <div className="w-full max-w-lg rounded-2xl p-6 space-y-5"
+        style={{ background: 'oklch(0.10 0.015 240)', border: '1px solid oklch(0.22 0.015 240)' }}>
+
+        {/* Title */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-black text-white">🏷 Enrich Securities</h2>
+            <p className="text-xs text-white/40 mt-0.5">Fetches company name &amp; sector from Yahoo Finance for all securities missing that data</p>
+          </div>
+          <button onClick={onClose} disabled={status === 'running'}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/8 transition disabled:opacity-30"
+            style={{ border: '1px solid oklch(0.22 0.015 240)' }}>✕</button>
+        </div>
+
+        {/* Status banner */}
+        {status !== 'idle' && (
+          <div className="rounded-xl px-4 py-3 space-y-2"
+            style={{ background: `${statusColor.replace(')', ' / 0.10)')}`, border: `1px solid ${statusColor.replace(')', ' / 0.30)')}` }}>
+            <p className="text-xs font-semibold" style={{ color: statusColor }}>{statusLabel}</p>
+            {/* Progress bar */}
+            {status === 'running' && total > 0 && (
+              <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'oklch(0.20 0.015 240)' }}>
+                <div className="h-full rounded-full transition-all duration-500"
+                  style={{ width: `${pct}%`, background: 'linear-gradient(90deg, oklch(0.72 0.20 60), oklch(0.72 0.22 145))' }} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Error */}
+        {error && <p className="text-xs font-semibold" style={{ color: 'oklch(0.72 0.22 25)' }}>⚠ {error}</p>}
+
+        {/* Log output */}
+        {log.length > 0 && (
+          <div className="rounded-xl p-3 font-mono text-[10px] text-white/50 space-y-0.5 max-h-40 overflow-y-auto"
+            style={{ background: 'oklch(0.07 0.01 240)', border: '1px solid oklch(0.15 0.015 240)' }}>
+            {log.map((l, i) => <p key={i}>{l}</p>)}
+          </div>
+        )}
+
+        {/* Note */}
+        <p className="text-[10px] text-white/25 text-center">
+          ⚠ Only securities with missing company name or sector are queried. 300 ms delay between requests to respect Yahoo Finance rate limits.
+        </p>
+
+        {/* Action buttons */}
+        <div className="flex gap-2">
+          <button onClick={onClose} disabled={status === 'running'}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white/50 hover:text-white transition disabled:opacity-30"
+            style={{ background: 'oklch(0.14 0.015 235)', border: '1px solid oklch(0.22 0.015 240)' }}>Cancel</button>
+          <button onClick={handleStart} disabled={status === 'running'}
+            className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white transition disabled:opacity-60"
+            style={{ background: status === 'done' ? 'oklch(0.72 0.22 145 / 0.25)' : 'linear-gradient(135deg, oklch(0.72 0.20 60), oklch(0.55 0.18 145))' }}>
+            {status === 'running' ? '⏳ Running...' : status === 'done' ? '✅ Completed' : '▶ Start Enrichment'}
+          </button>
+        </div>
+
+      </div>
+    </div>
+  )
+}
+
 // ── Post-login dashboard ───────────────────────────────────────────────────
 function ReturnDashboard({ name, onLogout }: { name: string; onLogout: () => void }) {
   const [period, setPeriod] = useState<Period>('1d')
@@ -591,6 +714,7 @@ function ReturnDashboard({ name, onLogout }: { name: string; onLogout: () => voi
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showFetch, setShowFetch] = useState(false)
+  const [showEnrich, setShowEnrich] = useState(false)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -638,6 +762,7 @@ function ReturnDashboard({ name, onLogout }: { name: string; onLogout: () => voi
       <AnimatedBackground />
       <TopTicker />
       {showFetch && <DataFetchModal onClose={() => setShowFetch(false)} />}
+      {showEnrich && <EnrichSecuritiesModal onClose={() => setShowEnrich(false)} />}
 
       {/* ── Header ── */}
       <header className="relative z-10 flex items-center justify-between px-5 py-3 shrink-0"
@@ -669,6 +794,16 @@ function ReturnDashboard({ name, onLogout }: { name: string; onLogout: () => voi
             {initials}
           </div>
           <span className="hidden sm:block text-sm text-white/60 max-w-[120px] truncate">{name}</span>
+
+          {/* Enrich Securities */}
+          <button onClick={() => setShowEnrich(true)}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold transition-all"
+            style={{ background: 'oklch(0.72 0.20 60 / 0.12)', border: '1px solid oklch(0.72 0.20 60 / 0.30)', color: 'oklch(0.82 0.15 70)' }}>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+            </svg>
+            Enrich
+          </button>
 
           {/* Fetch Data */}
           <button onClick={() => setShowFetch(true)}
