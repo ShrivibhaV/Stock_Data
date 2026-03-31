@@ -85,22 +85,20 @@ ORDER BY m.year DESC, m.month DESC, m.month_over_month_change_pct DESC;
 -- View: v_returns_performance
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_returns_performance AS
-SELECT 
+SELECT
     r.symbol,
     s.company_name,
     s.sector,
     r.calculation_date,
     r.current_price,
-    r.return_1d,
-    r.return_1w,
-    r.return_1m,
     r.return_3m,
     r.return_6m,
+    r.return_9m,
     r.return_1y,
-    r.return_ytd,
-    r.volatility_1y,
-    r.sharpe_ratio_1y
+    r.volatility_30d,
+    r.volatility_90d,
+    r.volatility_1y
 FROM returns_analysis r
 INNER JOIN security s ON r.symbol = s.symbol
 WHERE r.calculation_date = (SELECT MAX(calculation_date) FROM returns_analysis)
-ORDER BY r.return_1m DESC;
+ORDER BY r.return_1y DESC;

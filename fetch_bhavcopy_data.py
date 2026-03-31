@@ -171,10 +171,16 @@ class BhavcopyFetcher:
         """Parse new format (Aug 2024+): sec_bhavdata_full_DDMMYYYY.csv"""
         records = []
         reader  = csv.DictReader(StringIO(csv_content), skipinitialspace=True)
+
+        # NSE headers sometimes have trailing spaces — normalise all keys once.
+        if reader.fieldnames:
+            reader.fieldnames = [f.strip() for f in reader.fieldnames]
+
         for row in reader:
             try:
                 if not row.get('SYMBOL', '').strip():
                     continue
+                deliv_per_raw = self._dec(row.get('DELIV_PER'))
                 record = {
                     'symbol':        row['SYMBOL'].strip(),
                     'series':        row.get('SERIES', '').strip(),
@@ -189,7 +195,8 @@ class BhavcopyFetcher:
                     'turnover_lacs': self._dec(row.get('TURNOVER_LACS')),
                     'no_of_trades':  self._int(row.get('NO_OF_TRADES')),
                     'deliv_qty':     self._int(row.get('DELIV_QTY')),
-                    'deliv_per':     self._dec(row.get('DELIV_PER')),
+                    # DECIMAL(5,2) max = 999.99 — round to 2dp to avoid overflow
+                    'deliv_per':     round(deliv_per_raw, 2) if deliv_per_raw is not None else None,
                 }
                 if record['symbol'] and record['series'] and record['close_price'] is not None:
                     records.append(record)
@@ -210,6 +217,11 @@ class BhavcopyFetcher:
         """
         records = []
         reader  = csv.DictReader(StringIO(csv_content), skipinitialspace=True)
+
+        # Normalise header keys — strip any accidental whitespace.
+        if reader.fieldnames:
+            reader.fieldnames = [f.strip() for f in reader.fieldnames]
+
         for row in reader:
             try:
                 if not row.get('SYMBOL', '').strip():
@@ -343,8 +355,7 @@ class DatabasePopulator:
     def insert_daily_data(
         self,
         records: List[Dict],
-        trading_date: datetime,
-        file_name: str
+        trading_date: datetime
     ):
         """
         Bulk-upsert a day's bhavcopy records.
@@ -377,8 +388,7 @@ class DatabasePopulator:
                 r['prev_close'],    r['open_price'],  r['high_price'],
                 r['low_price'],     r['last_price'],  r['close_price'],
                 r['ttl_trd_qnty'],  r['turnover_lacs'], r['no_of_trades'],
-                r['deliv_qty'],     r['deliv_per'],
-                'NSE_BHAV',         file_name
+                r['deliv_qty'],     r['deliv_per']
             )
             for r in unique.values()
         ]
@@ -390,7 +400,7 @@ class DatabasePopulator:
                         symbol, trading_date, code, prev_close,
                         open_price, high_price, low_price, last_price, close_price,
                         total_traded_qty, turnover_lacs, no_of_trades,
-                        delivery_qty, delivery_percent, data_source, file_name
+                        delivery_qty, delivery_percent
                     ) VALUES %s
                     ON CONFLICT (symbol, trading_date) DO UPDATE SET
                         code             = EXCLUDED.code,
@@ -404,10 +414,7 @@ class DatabasePopulator:
                         turnover_lacs    = EXCLUDED.turnover_lacs,
                         no_of_trades     = EXCLUDED.no_of_trades,
                         delivery_qty     = EXCLUDED.delivery_qty,
-                        delivery_percent = EXCLUDED.delivery_percent,
-                        data_source      = EXCLUDED.data_source,
-                        file_name        = EXCLUDED.file_name,
-                        updated_at       = CURRENT_TIMESTAMP
+                        delivery_percent = EXCLUDED.delivery_percent
                 """, rows)
             self.conn.commit()
             logger.info(f"  [OK] {len(rows)} rows committed")
@@ -502,9 +509,11 @@ def run_pipeline(
         # Steps 1 + 2 : fetch + insert
         # ------------------------------------------------------------------
         while current <= end_date:
-            if current.weekday() >= 5:          # skip Saturday, Sunday
-                current += timedelta(days=1)
-                continue
+            # Weekends are attempted too — NSE returns 404 for normal Sat/Sun
+            # and 200 for genuine special trading sessions (e.g. Budget Day).
+            # This means we never miss a special session without any manual config.
+            if current.weekday() >= 5:
+                logger.debug(f"  Weekend {current.strftime('%Y-%m-%d')} — attempting fetch (NSE decides)")
 
             csv_text = fetcher.fetch_bhavcopy(current)
             if csv_text is None:
@@ -519,9 +528,8 @@ def run_pipeline(
                 current += timedelta(days=1)
                 continue
 
-            fname = f"sec_bhavdata_full_{current.strftime('%d%m%Y')}.csv"
             try:
-                populator.insert_daily_data(records, current, fname)
+                populator.insert_daily_data(records, current)
                 inserted += 1
             except Exception as e:
                 logger.error(f"  Insert failed for {current.strftime('%Y-%m-%d')}: {e}")
@@ -656,18 +664,20 @@ def main():
     print("=" * 70)
     print()
 
-    config_path    = os.path.join(_SCRIPT_DIR, 'config.json')
-    db_config      = None
-    start_date     = None
-    end_date       = None
-    auto_aggregate = True
+    config_path          = os.path.join(_SCRIPT_DIR, 'config.json')
+    db_config            = None
+    start_date           = None
+    end_date             = None
+    auto_aggregate       = True
+    special_trading_days = []
 
     # ---- Phase 1: config.json -------------------------------------------
     cfg = load_config(config_path)
     if cfg is not None:
         print(f"[OK] Loaded {config_path}")
-        db_config      = cfg['db_config']
-        auto_aggregate = cfg.get('auto_aggregate', True)
+        db_config            = cfg['db_config']
+        auto_aggregate       = cfg.get('auto_aggregate', True)
+        special_trading_days = cfg.get('special_trading_days', [])
 
         cfg_start = cfg.get('start_date', 'auto').strip()
         cfg_end   = cfg.get('end_date',   'auto').strip()
@@ -734,10 +744,11 @@ def main():
     print("=" * 70)
     print("CONFIGURATION")
     print("=" * 70)
-    print(f"  Start Date     : {start_date.strftime('%Y-%m-%d')}")
-    print(f"  End Date       : {end_date.strftime('%Y-%m-%d')}")
-    print(f"  Database       : {db_config['user']}@{db_config['host']}:{db_config.get('port','5432')}/{db_config['database']}")
-    print(f"  Auto-aggregate : {auto_aggregate}")
+    print(f"  Start Date          : {start_date.strftime('%Y-%m-%d')}")
+    print(f"  End Date            : {end_date.strftime('%Y-%m-%d')}")
+    print(f"  Database            : {db_config['user']}@{db_config['host']}:{db_config.get('port','5432')}/{db_config['database']}")
+    print(f"  Auto-aggregate      : {auto_aggregate}")
+    print(f"  Special trading days: {special_trading_days if special_trading_days else 'none'}")
     print("=" * 70)
     print()
 
@@ -746,7 +757,7 @@ def main():
         return
 
     print()
-    ok = run_pipeline(start_date, end_date, db_config, auto_aggregate)
+    ok = run_pipeline(start_date, end_date, db_config, auto_aggregate, special_trading_days)
 
     if ok:
         print()
@@ -782,8 +793,9 @@ def run_scheduled():
         logger.error(f"config.json not found at {config_path} -- cannot run headless.")
         sys.exit(1)
 
-    db_config      = cfg['db_config']
-    auto_aggregate = cfg.get('auto_aggregate', True)
+    db_config            = cfg['db_config']
+    auto_aggregate       = cfg.get('auto_aggregate', True)
+    special_trading_days = cfg.get('special_trading_days', [])
 
     cfg_start = cfg.get('start_date', 'auto').strip()
     cfg_end   = cfg.get('end_date',   'auto').strip()
@@ -807,7 +819,7 @@ def run_scheduled():
         logger.info("Start date is in the future — nothing to fetch.")
         sys.exit(0)
 
-    ok = run_pipeline(start_date, end_date, db_config, auto_aggregate)
+    ok = run_pipeline(start_date, end_date, db_config, auto_aggregate, special_trading_days)
     sys.exit(0 if ok else 1)
 
 

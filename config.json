@@ -1,6 +1,6 @@
 {
-  "start_date": "2026-03-02",
-  "end_date": "2026-03-02",
+  "start_date": "auto",
+  "end_date": "auto",
   "db_config": {
     "host": "localhost",
     "port": "5433",
@@ -9,5 +9,8 @@
     "password": "12345"
   },
   "save_password": true,
-  "auto_aggregate": true
+  "auto_aggregate": true,
+  "special_trading_days": [
+    "2026-02-01"
+  ]
 }
